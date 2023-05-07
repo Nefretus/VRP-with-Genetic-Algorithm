@@ -4,141 +4,182 @@ import numpy as np
 import random
 import matplotlib.pyplot as plt
 
-#klasa ktora, reprezentuje gen czyli miasto (klienta)
+MAX_VEHICLE_DISTANCE = 1000
+
 class Gene: 
-    def __init__(self, nr, pos_x, pos_y):
-        self.city_nr = int(nr)
+    def __init__(self, city_nr, pos_x, pos_y):
+        self.nr = int(city_nr)
         self.pos_x = int(pos_x)
         self.pos_y = int(pos_y)
         self.distances = {} 
     
     def calculate_distance(self, other_city):
-        self.distances[other_city.city_nr] = np.sqrt((other_city.pos_x - self.pos_x) ** 2 + (other_city.pos_y - self.pos_y) ** 2)
+        self.distances[other_city.nr] = np.sqrt((other_city.pos_x - self.pos_x) ** 2 + (other_city.pos_y - self.pos_y) ** 2)
 
-#klasa reprezentujaca jedno rozwiazanie - konfiguracja miast
 class Individual:
-    def __init__(self, route, depot, solution=None): #jezeli None to wygeneruj nowe rozwiazanie
-        if solution:
-            self.genes = solution
-        else:
-            self.genes = [random.random() for _ in range(len(route))] #encoded, tworzone randomowo
-        self.route = sorted(route, key=lambda e : e.city_nr) # mozeliwe ze to niepotrzebne ale zostawiam
+    def __init__(self, cities, depot, random_keys=None):
+        self.cities = cities
         self.depot = depot
+        if random_keys: self.random_keys = random_keys #generate individual from existing solution
+        else: self.random_keys = [random.random() for _ in range(len(cities))] #generate new solution, wtih random keys, example: [0.21, 0.51, 0.13...]
+        self.routes = self.route_to_subroutes(self.decode_solution()) #example: [[1, 5], [7, 12, 24],...]
         self.calculate_solution_fitness()
+    
+    def route_to_subroutes(self, solution):
+        global MAX_VEHICLE_DISTANCE
+        curr_distance = 0
+        prev_city = self.depot
+        curr_route = []
+        routes = []
+        for city in solution:
+            if curr_distance == 0:
+                curr_distance += self.depot.distances[city.nr] 
+            if curr_distance != 0 or len(curr_route) != 0: 
+                curr_distance += prev_city.distances[city.nr]
+            prev_city = city
+            if curr_distance + self.depot.distances[city.nr] <= MAX_VEHICLE_DISTANCE: 
+                curr_route.append(city)
+            else:
+                curr_distance += city.distances[self.depot.nr]
+                routes.append(curr_route)
+                curr_route = [city]
+                curr_distance = self.depot.distances[city.nr]
+        routes.append(curr_route)
+        return routes
         
-    def calculate_solution_fitness(self): #trzeba dodac kary za zle rozwiazania
-        self.solution = self.decode_solution() #decoded
-        self.distance = 0
-        for idx, current_city in enumerate(self.solution):
-            next_city = self.solution[(idx + 1) % len(self.solution)]
-            self.distance += current_city.distances[next_city.city_nr] #tutaj blad zapomniales o depot!!!!!!!!1
+    def calculate_solution_fitness(self, unit_cost=1):
+        self.total_distance = 0
+        for route in self.routes:
+            sub_distance = 0
+            route_with_depot = [self.depot] + route + [self.depot]
+            for idx, current_city in enumerate(route_with_depot[:-1]):
+                next_city = route_with_depot[idx + 1]
+                sub_distance += current_city.distances[next_city.nr] * unit_cost
+            self.total_distance += sub_distance
 
-    def get_city(self, index):
-        return self.genes[index]
+    def decode_solution(self) -> Gene:
+        return [self.cities[idx] for idx in np.argsort(self.random_keys)]
 
-    def decode_solution(self):
-        return [self.route[idx] for idx in np.argsort(self.genes)]
-
-#zbior rozwiazan - populacja
-class Population:
-    def __init__(self):
-        self.generation = []
+from enum import Enum
+class Mutation(Enum):
+    SWAP = 1 #mutacja w postaci zamiany dwoch losowych genow w chromosomie
+    NEW_INDIVIDUAL  = 2 #mutacja w postaci nowego chromosomu
     
-    def add_solution(self, solution):
-        self.generation.append(solution)
-        self.generation.sort(key=lambda solution : solution.distance) 
+class Crossover(Enum):
+    ONE_POINT = 1
+    TWO_POINT = 2
+    UNIFORM = 3
     
-    def get_individual(self, index):
-        return self.generation[index]
-    
-    def get_best_solution(self):
-        #narazie poprostu zwracam najlepsze rozwiazanie jakie sie wygenerowalo xd
-        return self.generation[0]
-
-#klasa zarzadzajaca praca algorytmu        
 class GeneticAlgorithm:
-    def __init__(self, pop_size, gen_count):
+    def __init__(self, pop_size, gen_count, crossover_type, mutation_type):
         self.pop_size = pop_size
         self.gen_count = gen_count
-        self.best_solutions = []
+        self.crossover_type = crossover_type
+        self.mutation_type = mutation_type
+        self.population = []
         #parametry algorytmu
-        self.mutations_per_gen = int(0.1 * self.pop_size)
-        #ile najelepszych rozwiazan przechodzi automatycznie do next generacji
-        self.best_to_next_gen_count = pop_size // 5
-        self.tournament_size = pop_size - self.best_to_next_gen_count - self.mutations_per_gen
+        if mutation_type == Mutation.NEW_INDIVIDUAL: self.mutations_per_generation = int(0.1 * self.pop_size)
+        else: self.mutations_per_generation = 0
+        self.best_to_next_gen_count = pop_size // 5 #ile najelepszych rozwiazan przechodzi automatycznie do next generacji - 20%
+        self.tournament_size = pop_size - self.best_to_next_gen_count - self.mutations_per_generation
+        self.mutation_rate = 0.1
         
-    def main_loop(self):
+    def main_loop(self, GUI):
         self.load_data()
-        for route in self.routes:
-            self.current_route = route
-            self.create_initial_generation()
-            y_axis = []
-            for gen_nr in range(self.gen_count):
-                next_generation = Population()
-                for i in range(self.best_to_next_gen_count):
-                    next_generation.add_solution(self.population.get_individual(i))
-                self.one_point_crossover(self.tournament(), next_generation)
-                self.mutate(next_generation)
-                self.population = next_generation
-                #printowanie wynikow ale wychodzi scierwoooooooooo
-                y_axis.append(self.population.get_best_solution().distance)
-            plt.plot(range(self.gen_count), y_axis)
-            self.best_solutions.append(self.population.get_best_solution())
-        
+        curr_best_soulution = []
+        self.create_initial_generation()
+        for nr in range(self.gen_count):
+            next_generation = []
+            for i in range(self.best_to_next_gen_count):
+                self.add_individual(next_generation, self.population[i])
+            parents = self.tournament()
+            if self.crossover_type == Crossover.ONE_POINT: self.one_point_crossover(parents, next_generation)
+            elif self.crossover_type == Crossover.TWO_POINT: self.two_point_crossover(parents, next_generation)
+            else: self.uniform_crossover(parents, next_generation)
+            if self.mutation_type == Mutation.NEW_INDIVIDUAL: self.mutate_new_individual(next_generation)
+            else: self.mutation_swap(next_generation)
+            self.population = next_generation    
+            curr_best_soulution.append(self.best_solution.total_distance)
+            GUI.update(self.best_solution.routes, self.cities, self.depot, nr + 1, self.best_solution.total_distance)
+        plt.plot(range(self.gen_count), curr_best_soulution)
+            
     def load_data(self):
         with open('sampleData.txt', 'r') as f:
-            (self.truck_count, self.delivery_cooldown, self.time_limit) = f.readline().split()
+            global MAX_VEHICLE_DISTANCE
+            MAX_VEHICLE_DISTANCE= int(f.readline())
             self.depot = Gene(*f.readline().split())
             self.cities = [Gene(*line.split()) for line in f.readlines()]
         for city in self.cities:
             self.depot.calculate_distance(city)
             for other_city in self.cities:
                 city.calculate_distance(other_city)
-        self.cities.sort(key=lambda city : (city.pos_x, city.pos_y))
-        self.routes = np.array_split(self.cities, int(self.truck_count)) #route to trasa dla jednego pojazdu
+                city.calculate_distance(self.depot)
     
     def create_initial_generation(self):
-        self.population = Population()
-        for nr in range(self.pop_size):
-            self.population.add_solution(Individual(self.current_route, self.depot)) #troche mnie ten depot wkurwia
+        for _ in range(self.pop_size):
+            soulution = Individual(self.cities, self.depot)
+            self.add_individual(self.population, soulution) 
     
-    #mozna zaimplementowac rozne rodzaje turniejow potem
-    def tournament(self):
-        parents = []
-        duplicates_deleted = False
-        while True:
-            parent_nr1 = random.randint(self.best_to_next_gen_count, self.pop_size - 1)
-            parent_nr2 = random.randint(self.best_to_next_gen_count, self.pop_size - 1)
-            parents.append((parent_nr1, parent_nr2))
-            if len(parents) == self.tournament_size:
-                parents = list(set(parents)) 
-                if len(parents) == self.tournament_size: #czy po usunieciu duplikatow mamy odpowiednio duzo rodzicow
-                    return parents
-            
-    #tak samo mozna rozne crossovery, zobaczyc ktory najelpszy
-    def one_point_crossover(self, parent_nrs, next_generation):
-        split_point = random.randint(0, len(self.current_route))
-        for parent_nr in parent_nrs:
-            child = []
-            for i in range(len(self.current_route)):
-                #tu bedzie troche pojebanie bo sa te random keys
-                if i < split_point:
-                    city = self.population.get_individual(parent_nr[0]).get_city(i)
-                else:
-                    city = self.population.get_individual(parent_nr[1]).get_city(i)
-                child.append(city)
-            next_generation.add_solution(Individual(self.current_route, self.depot, solution=child))
-
-    def two_point_crossover(self, parents): # do implementacji
-        pass
-    
-    def uniform_crossover(self, parents): # do implementacji
-        pass
+    def add_individual(self, population, individual):
+        population.append(individual)
+        population.sort(key=lambda solution : solution.total_distance)
+        self.best_solution = self.population[0]
         
-    def mutate(self, next_generation):
-        for i in range(self.mutations_per_gen):
-            next_generation.add_solution(Individual(self.current_route, self.depot)) #poprostu generuje nowe chromosomy randomowe
+    def tournament(self, roulette_selection=True):
+        parents = []
+        while True:
+            #metoda ruletki
+            if roulette_selection:
+                fitness_sum = np.sum([individual.total_distance for individual in self.population])
+                prob_associated_with_each_entry = [individual.total_distance / fitness_sum for individual in self.population][::-1]
+                parents.append(tuple(np.random.choice(self.pop_size, 2, p=prob_associated_with_each_entry)))
+            #metoda turniejowa
+            else:
+                k_parameter = 3
+                next_parents = []
+                for _ in range(2):
+                    parents_candidate = np.random.choice(self.pop_size - 1, k_parameter)
+                    idx = np.argsort([self.population[parent].total_distance for parent in parents_candidate])[0]
+                    next_parents.append(parents_candidate[idx])
+                parents.append(tuple(next_parents))
+            if len(parents) == self.tournament_size:
+                return parents
+            
+    def one_point_crossover(self, parents, next_generation):
+        split_point = random.randint(0, len(self.cities) - 1)
+        for parent in parents:
+            child = [self.population[parent[0]].random_keys[i] if i < split_point else self.population[parent[1]].random_keys[i] for i in range(len(self.cities))]
+            self.add_individual(next_generation, Individual(self.cities, self.depot, random_keys=child))
+
+    def two_point_crossover(self, parents, next_generation):
+        point1 = random.randint(0, len(self.cities) - 1)
+        point2 = random.randint(0, len(self.cities) - 1)
+        point1, point2 = min(point1, point2), max(point1, point2)
+        for parent in parents:
+            child = [self.population[parent[1]].random_keys[i] if i >= point1 and i <= point2 else self.population[parent[0]].random_keys[i] for i in range(len(self.cities))]
+            self.add_individual(next_generation, Individual(self.cities, self.depot, random_keys=child))
     
+    def uniform_crossover(self, parents, next_generation):
+        threshold = 0.5
+        for parent in parents:
+            child = [self.population[parent[1]].random_keys[i] if random.random() < threshold else self.population[parent[0]].random_keys[i] for i in range(len(self.cities))]
+            self.add_individual(next_generation, Individual(self.cities, self.depot, random_keys=child))
+        
+    def mutate_new_individual(self, next_generation):
+        for _ in range(self.mutations_per_generation):
+            self.add_individual(next_generation, Individual(self.cities, self.depot))
+    
+    def mutation_swap(self, next_generation):
+        for idx, individual in enumerate(next_generation):
+            if random.random() < self.mutation_rate:
+                pos1 = random.randint(0, len(self.cities) - 1)
+                pos2 = random.randint(0, len(self.cities) - 1)
+                temp = individual.random_keys[pos2]
+                individual.random_keys[pos2] = individual.random_keys[pos1]
+                individual.random_keys[pos1] = temp
+                individual = Individual(self.cities, self.depot, random_keys=individual.random_keys) #recalculate fitness
+        next_generation.sort(key=lambda solution : solution.total_distance)  
+        
 class GUI:
     def __init__(self, width, height):
         self.width = width
@@ -146,16 +187,19 @@ class GUI:
         self.window = pg.display.set_mode((width, height))
         pg.display.set_caption('VRP with Genetic algorithm')
         
-    def update(self, solutions, cities, depot):
+    def update(self, routes, cities, depot, gen_nr, min_distance):
         pg.draw.rect(self.window, pg.Color('white'), pg.Rect(0, 0, self.width, self.height))
-        colors_list = [pg.Color('red'), pg.Color('green'), pg.Color('purple'), pg.Color('yellow'), pg.Color('black')]
+        colors_list = [pg.Color('red'), pg.Color('green'), pg.Color('purple'), pg.Color('orange'), pg.Color('blue'),  pg.Color('grey')]
         colors_list_idx = 0
         normalized_coords = []
-        for solution in solutions:
+        font = pg.font.SysFont('comicsans', 25)
+        self.window.blit(font.render(f'Generation: {gen_nr}', 1, pg.Color("black")), (10, 10))
+        self.window.blit(font.render(f'Minimum distance: {min_distance}', 1, pg.Color("black")), (10, 10 + font.get_height()))
+        for route in routes:
             x, y = self.normalize(cities, depot.pos_x, depot.pos_y)
             normalized_coords.append((x, y))
             pg.draw.circle(self.window, pg.Color('green'), (x, y), 5)
-            for city in solution.decode_solution():
+            for city in route:
                 x, y = self.normalize(cities, city.pos_x, city.pos_y)
                 normalized_coords.append((x, y))
                 pg.draw.circle(self.window, pg.Color('black'), (x, y), 5)
@@ -165,10 +209,6 @@ class GUI:
             normalized_coords.clear()
             colors_list_idx += 1
         pg.display.update()
-        plt.title("Genetic algorithm progress")
-        plt.xlabel("Generation")
-        plt.ylabel("Min distance")
-        plt.show()
         
     def normalize(self, cities, x, y):
         x_coords = [city.pos_x for city in cities]
@@ -176,24 +216,21 @@ class GUI:
         x_norm = (x - np.min(x_coords)) / (np.max(x_coords) - np.min(x_coords)) * (self.width * 0.8) + self.width * 0.1
         y_norm = (y - np.min(y_coords)) / (np.max(y_coords) - np.min(y_coords)) * (self.height* 0.8) + self.height * 0.1
         return x_norm, y_norm
-
-def main(args):
-    ga = GeneticAlgorithm(args.popSize, args.genCount)
-    ga.main_loop()
-    gui = GUI(900, 600)
-    running = True
-    while running:
-        for event in pg.event.get():
-            if event.type == pg.QUIT:
-                running = False
-        gui.update(ga.best_solutions, ga.cities, ga.depot)
         
+def main(args):
+    ga = GeneticAlgorithm(args.popSize, args.genCount, Crossover.UNIFORM, Mutation.NEW_INDIVIDUAL) #rozne warianty
+    ga.main_loop(GUI(900, 600))
+    plt.title("Genetic algorithm progress")
+    plt.xlabel("Generation")
+    plt.ylabel("Min distance")
+    plt.show()
+    
 if __name__ == '__main__':
     pg.init()
     parser = argparse.ArgumentParser()
-    parser.add_argument('--popSize', type=int, default=30, required=False,
+    parser.add_argument('--popSize', type=int, default=400, required=False,
                         help="Enter the population size")
-    parser.add_argument('--genCount', type=int, default=50, required=False,
+    parser.add_argument('--genCount', type=int, default=200, required=False,
                         help="Number of generations to run")
     main(parser.parse_args())
     pg.quit()
